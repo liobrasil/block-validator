@@ -1,0 +1,14 @@
+{
+  "name": "block-validator",
+  "version": "1.0.0",
+  "description": "BSC block validator monitor",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "ethers": "^6.9.0",
+    "ws": "^8.15.1"
+  }
+}
