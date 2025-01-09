@@ -5,17 +5,6 @@ const fs = require('fs');
 
 dotenv.config();
 
-// Same ABI and config
-const CONTRACT_ABI = [
-  {
-    inputs: [],
-    name: "getValidators",
-    outputs: [{ internalType: "address[]", name: "", type: "address[]" }],
-    stateMutability: "view",
-    type: "function",
-  },
-];
-
 const config = {
   wsUrl: process.env.WSS,
   rpcUrl: process.env.HTTP,
@@ -34,7 +23,15 @@ class BlockValidator {
     this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
     this.contract = new ethers.Contract(
       config.contractAddress,
-      CONTRACT_ABI,
+      [
+        {
+          inputs: [],
+          name: "getValidators",
+          outputs: [{ internalType: "address[]", name: "", type: "address[]" }],
+          stateMutability: "view",
+          type: "function",
+        },
+      ],
       this.provider
     );
     this.ws = null;
@@ -48,15 +45,41 @@ class BlockValidator {
       club48Blocks: 0,
       totalBlocks: 0
     };
-    // Add data collection for JSON
-    this.epochData = [];
-    this.blockData = [];
+    // Keep data in memory and save periodically
+    this.data = {
+      epochs: [],
+      blocks: {},  // Changed to object with epoch ranges as keys
+    };
+    this.loadExistingData();
+  }
+
+  async loadExistingData() {
+    try {
+      if (fs.existsSync('validator_data.json')) {
+        const fileData = await fs.promises.readFile('validator_data.json', 'utf8');
+        this.data = JSON.parse(fileData);
+      }
+    } catch (error) {
+      console.error("Error loading existing data:", error);
+    }
+  }
+
+  async saveData() {
+    try {
+      await fs.promises.writeFile(
+        'validator_data.json',
+        JSON.stringify(this.data, null, 2)
+      );
+    } catch (error) {
+      console.error("Error saving data:", error);
+    }
   }
 
   async handleNewBlock(blockHeader) {
     const blockNumber = parseInt(blockHeader.number, 16);
     const miner = blockHeader.miner.toLowerCase();
-
+    
+    // Initialize epoch stats if needed
     if (this.epochStats.startBlock === 0) {
       this.epochStats.startBlock = blockNumber - (blockNumber % 200);
     }
@@ -66,6 +89,13 @@ class BlockValidator {
       this.epochStats.club48Blocks++;
     }
 
+    // Store block data under current epoch
+    const currentEpoch = `${this.epochStats.startBlock}-${this.epochStats.startBlock + 200}`;
+    if (!this.data.blocks[currentEpoch]) {
+      this.data.blocks[currentEpoch] = [];
+    }
+
+    // Check if block number is divisible by 200 (end of epoch)
     if (blockNumber % 200 === 0) {
       const percentage = ((this.epochStats.club48Blocks / this.epochStats.totalBlocks) * 100).toFixed(2);
       console.log(`Epoch ${blockNumber-200}-${blockNumber}:`);
@@ -93,24 +123,23 @@ class BlockValidator {
       console.log(`Number of validators in extraData: ${foundValidators.length}`);
       console.log("\n---------------------------------");
 
-      // Save epoch data to JSON
-      this.epochData.push({
+      // Store epoch data
+      this.data.epochs.push({
         epochRange: `${blockNumber-200}-${blockNumber}`,
         validationRate: `${percentage}%`,
         club48Blocks: this.epochStats.club48Blocks,
         totalBlocks: this.epochStats.totalBlocks,
         validatorsInExtraData: foundValidators.length,
-        validatorOrder: foundValidators.map(v => ({
-          address: v.address,
-          position: v.position
-        })),
+        validatorOrder: foundValidators,
         extraData: extraData
       });
 
-      // Write to JSON file
-      this.saveToJson();
-
       this.validatorCache.lastUpdateBlock = blockNumber;
+      
+      // Save to file after each epoch
+      await this.saveData();
+      
+      // Reset stats for next epoch
       this.epochStats = {
         startBlock: blockNumber,
         club48Blocks: 0,
@@ -121,40 +150,27 @@ class BlockValidator {
         v => v.address.toLowerCase() === miner
       );
       
-      const isClub48 = config.club48Validators.map(addr => addr.toLowerCase()).includes(miner);
-      const club48Tag = isClub48 ? "[Club48] " : "";
-
       if (extraDataIndex !== -1) {
+        const isClub48 = config.club48Validators.map(addr => addr.toLowerCase()).includes(miner);
+        const club48Tag = isClub48 ? "[Club48] " : "";
         console.log(`${club48Tag}Block ${blockNumber}: Found in last extraData at position ${extraDataIndex}`);
-        
-        // Save block data to JSON
-        this.blockData.push({
+
+        // Store block data
+        this.data.blocks[currentEpoch].push({
           blockNumber,
           miner,
           extraDataPosition: extraDataIndex,
           isClub48
         });
+
+        // Save to file every 10 blocks
+        if (blockNumber % 10 === 0) {
+          await this.saveData();
+        }
       }
     }
   }
 
-  async saveToJson() {
-    const data = {
-      epochs: this.epochData,
-      blocks: this.blockData
-    };
-
-    try {
-      await fs.promises.writeFile(
-        'validator_data.json',
-        JSON.stringify(data, null, 2)
-      );
-    } catch (error) {
-      console.error("Error saving to JSON:", error);
-    }
-  }
-
-  // Rest of the class remains exactly the same
   async start() {
     try {
       console.log("Starting block validator...");
